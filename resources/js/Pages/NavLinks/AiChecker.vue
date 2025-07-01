@@ -51,6 +51,11 @@ const copyToClipboard = () => {
 // Main upload function
 
 const uploadResume = async () => {
+    // Reset states
+    error.value = null;
+    errorHint.value = "";
+    successMessage.value = "";
+
     if (!file.value) {
         error.value = "Please select a file first";
         return;
@@ -73,26 +78,20 @@ const uploadResume = async () => {
         return;
     }
 
+    const currentFile = file.value;
     uploading.value = true;
-    error.value = null;
-    errorHint.value = "";
-    successMessage.value = "";
     uploadProgress.value = 0;
 
-    const formData = new FormData();
-    formData.append("resume", file.value);
-
-    // Debug: Log before request
-    console.log("Starting upload...", {
-        name: file.value.name,
-        size: file.value.size,
-        type: file.value.type,
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
 
     try {
+        const formData = new FormData();
+        formData.append("resume", currentFile);
+
         const response = await axios.post("/upload", formData, {
             headers: { "Content-Type": "multipart/form-data" },
-            timeout: 30000, // Increased timeout to 30 seconds
+            signal: controller.signal,
             onUploadProgress: (progressEvent) => {
                 if (progressEvent.total) {
                     uploadProgress.value = Math.round(
@@ -102,36 +101,32 @@ const uploadResume = async () => {
             },
         });
 
-        // Debug: Log response
-        console.log("Upload response:", response.data);
+        clearTimeout(timeout);
 
-        if (!response.data || typeof response.data.success === "undefined") {
-            throw new Error("Invalid server response structure");
+        if (!response.data?.success) {
+            throw new Error(
+                response.data?.message || "Invalid server response"
+            );
         }
 
-        if (response.data.success) {
-            successMessage.value =
-                response.data.message || "Resume stored successfully!";
-            extractedText.value = response.data.extracted_text || "";
-            results.value = response.data;
-
-            file.value = null;
-            document.getElementById("resume-upload").value = "";
-        } else {
-            throw new Error(response.data.message || "Upload failed");
-        }
+        results.value = {
+            ...response.data,
+            uploaded_at: new Date().toLocaleString(),
+        };
+        extractedText.value = response.data.extracted_text || "";
+        successMessage.value = "Upload successful!";
     } catch (err) {
-        console.error("Upload failed:", err);
         error.value = err.response?.data?.message || err.message;
         errorHint.value =
             err.code === "ECONNABORTED"
-                ? "Request timed out"
+                ? "Upload timed out (30s)"
                 : "Please try again";
+        console.error("Upload error:", err);
     } finally {
-        console.log("Finalizing upload state");
         uploading.value = false;
         uploadProgress.value = 0;
-        // Don't reset file here - let user see what they uploaded
+        file.value = null;
+        document.getElementById("resume-upload").value = "";
     }
 };
 </script>
