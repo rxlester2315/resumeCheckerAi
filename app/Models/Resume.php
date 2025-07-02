@@ -10,4 +10,9 @@ class Resume extends Model
      protected $fillable = [
         'user_id', 'original_name', 'storage_path', 'file_type','file_size','extracted_text'
       ];
+
+
+      protected $casts = [
+    'ai_analysis' => 'array',
+];
 }
