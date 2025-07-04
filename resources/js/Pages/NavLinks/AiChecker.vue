@@ -12,6 +12,8 @@ const extractedText = ref("");
 const successMessage = ref("");
 const dragOver = ref(false);
 const uploadProgress = ref(0);
+const aiProcessing = ref(false); // New state for AI processing
+const analysisProgress = ref(0); // Add this with your other refs
 
 // Format file size for display
 const formatFileSize = (bytes) => {
@@ -55,6 +57,9 @@ const uploadResume = async () => {
     error.value = null;
     errorHint.value = "";
     successMessage.value = "";
+    results.value = null;
+    extractedText.value = "";
+    analysisProgress.value = 0;
 
     if (!file.value) {
         error.value = "Please select a file first";
@@ -115,6 +120,19 @@ const uploadResume = async () => {
         };
         extractedText.value = response.data.extracted_text || "";
         successMessage.value = "Upload successful!";
+
+        // If AI analysis is being processed asynchronously
+        if (response.data.ai_processing) {
+            aiProcessing.value = true;
+            successMessage.value = "File uploaded! AI analysis in progress...";
+
+            // Poll for AI results
+            await pollForAIResults(response.data.resume_id);
+        } else {
+            // Immediate AI results
+            results.value.ai_analysis = response.data.ai_analysis;
+            successMessage.value = "Analysis complete!";
+        }
     } catch (err) {
         error.value = err.response?.data?.message || err.message;
         errorHint.value =
@@ -127,6 +145,43 @@ const uploadResume = async () => {
         uploadProgress.value = 0;
         file.value = null;
         document.getElementById("resume-upload").value = "";
+    }
+};
+
+const pollForAIResults = async (resumeId) => {
+    const maxAttempts = 30;
+    let attempts = 0;
+
+    while (attempts < maxAttempts && !results.value?.ai_analysis) {
+        try {
+            const { data } = await axios.get(
+                `/resume/${resumeId}/analysis-status`
+            );
+
+            if (data.status === "completed") {
+                // Update with final AI results
+                results.value.ai_analysis = data.analysis;
+                successMessage.value = "AI analysis complete!";
+                return;
+            } else if (data.status === "failed") {
+                throw new Error("AI processing failed");
+            }
+
+            // Show progress if available
+            if (data.progress) {
+                successMessage.value = `Analyzing resume... ${data.progress}%`;
+            }
+        } catch (err) {
+            console.error("Polling error:", err);
+            // Don't show error unless it's the last attempt
+            if (attempts === maxAttempts - 1) {
+                error.value = "AI analysis timed out";
+                errorHint.value = "Results may be incomplete";
+            }
+        }
+
+        attempts++;
+        await new Promise((resolve) => setTimeout(resolve, 2000)); // Poll every 2s
     }
 };
 </script>
@@ -376,6 +431,141 @@ const uploadResume = async () => {
                             {{ Math.min(extractedText.length, 1000) }}
                             characters
                         </p>
+                    </div>
+                    <div
+                        v-if="aiProcessing"
+                        class="bg-blue-50 p-4 rounded-lg border-l-4 border-blue-500"
+                    >
+                        <div class="flex items-center">
+                            <svg
+                                class="animate-spin h-5 w-5 text-blue-600 mr-3"
+                                xmlns="http://www.w3.org/2000/svg"
+                                fill="none"
+                                viewBox="0 0 24 24"
+                            >
+                                <circle
+                                    class="opacity-25"
+                                    cx="12"
+                                    cy="12"
+                                    r="10"
+                                    stroke="currentColor"
+                                    stroke-width="4"
+                                ></circle>
+                                <path
+                                    class="opacity-75"
+                                    fill="currentColor"
+                                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                                ></path>
+                            </svg>
+                            <div>
+                                <p class="font-medium text-blue-800">
+                                    {{ successMessage }}
+                                </p>
+                                <div
+                                    class="w-full bg-gray-200 rounded-full h-2 mt-2"
+                                >
+                                    <div
+                                        class="bg-blue-600 h-2 rounded-full"
+                                        :style="{
+                                            width: analysisProgress + '%',
+                                        }"
+                                    ></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- AI Analysis Results -->
+                    <div v-if="results.ai_analysis" class="space-y-4">
+                        <!-- Skills Section -->
+                        <div
+                            class="bg-green-50 p-4 rounded-lg border-l-4 border-green-500"
+                        >
+                            <h4 class="font-medium text-gray-700 mb-2">
+                                🛠️ Identified Skills
+                            </h4>
+                            <div class="flex flex-wrap gap-2">
+                                <span
+                                    v-for="(skill, index) in results.ai_analysis
+                                        .skills"
+                                    :key="index"
+                                    class="bg-green-100 text-green-800 text-xs px-3 py-1 rounded-full"
+                                >
+                                    {{ skill }}
+                                </span>
+                            </div>
+                        </div>
+
+                        <!-- Experience Section -->
+                        <div
+                            v-if="results.ai_analysis.experience"
+                            class="bg-purple-50 p-4 rounded-lg border-l-4 border-purple-500"
+                        >
+                            <h4 class="font-medium text-gray-700 mb-2">
+                                💼 Work Experience
+                            </h4>
+                            <ul class="space-y-3">
+                                <li
+                                    v-for="(exp, index) in results.ai_analysis
+                                        .experience"
+                                    :key="index"
+                                    class="text-sm"
+                                >
+                                    <p class="font-semibold">{{ exp.title }}</p>
+                                    <p class="text-gray-600">
+                                        {{ exp.company }} • {{ exp.duration }}
+                                    </p>
+                                </li>
+                            </ul>
+                        </div>
+
+                        <!-- Quality Score -->
+                        <div
+                            class="bg-yellow-50 p-4 rounded-lg border-l-4 border-yellow-400"
+                        >
+                            <h4 class="font-medium text-gray-700 mb-2">
+                                📊 Resume Quality Score
+                            </h4>
+                            <div class="flex items-center">
+                                <div
+                                    class="w-full bg-gray-200 rounded-full h-4 mr-4"
+                                >
+                                    <div
+                                        class="bg-yellow-500 h-4 rounded-full"
+                                        :style="{
+                                            width:
+                                                results.ai_analysis
+                                                    .quality_score *
+                                                    10 +
+                                                '%',
+                                        }"
+                                    ></div>
+                                </div>
+                                <span class="font-bold text-lg"
+                                    >{{
+                                        results.ai_analysis.quality_score
+                                    }}/10</span
+                                >
+                            </div>
+                        </div>
+
+                        <!-- Recommendations -->
+                        <div
+                            class="bg-red-50 p-4 rounded-lg border-l-4 border-red-400"
+                        >
+                            <h4 class="font-medium text-gray-700 mb-2">
+                                💡 AI Recommendations
+                            </h4>
+                            <ul class="list-disc pl-5 space-y-2 text-sm">
+                                <li
+                                    v-for="(tip, index) in results.ai_analysis
+                                        .recommendations"
+                                    :key="index"
+                                >
+                                    {{ tip }}
+                                </li>
+                            </ul>
+                        </div>
                     </div>
                 </div>
             </div>

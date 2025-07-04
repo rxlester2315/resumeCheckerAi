@@ -11,10 +11,9 @@ class HuggingFaceService
     protected $apiToken;
     protected $apiUrl = 'https://api-inference.huggingface.co/models/';
 
-    // Models we'll use for different tasks
     protected $models = [
         'skills' => 'bert-base-uncased',
-        'experience' => 'dslim/bert-base-NER', // Named Entity Recognition
+        'experience' => 'dslim/bert-base-NER',
         'quality' => 'distilbert-base-uncased',
     ];
 
@@ -22,14 +21,14 @@ class HuggingFaceService
     {
         $this->client = new Client();
         $this->apiToken = env('HUGGING_FACE_API_KEY');
+          // Add validation
+    if (empty($this->apiToken)) {
+        throw new \RuntimeException('Hugging Face API key not configured');
+    }
     }
 
-    /**
-     * Extract skills from resume text
-     */
     public function extractSkills(string $text): array
     {
-        // First try to find a skills section
         if (preg_match('/SKILLS(.+?)(?=EXPERIENCE|EDUCATION|$)/is', $text, $matches)) {
             $skillsText = $matches[1];
         } else {
@@ -38,15 +37,12 @@ class HuggingFaceService
 
         $response = $this->callModel(
             $this->models['skills'],
-            "Extract technical skills from this text: " . $skillsText
+            "Extract technical skills from: " . $skillsText
         );
 
         return $this->processSkillsResponse($response);
     }
 
-    /**
-     * Analyze work experience
-     */
     public function analyzeExperience(string $text): array
     {
         $response = $this->callModel(
@@ -57,12 +53,8 @@ class HuggingFaceService
         return $this->processExperienceResponse($response);
     }
 
-    /**
-     * Analyze education section
-     */
     public function analyzeEducation(string $text): array
     {
-        // Try to isolate education section
         if (preg_match('/EDUCATION(.+?)(?=EXPERIENCE|SKILLS|$)/is', $text, $matches)) {
             $eduText = $matches[1];
         } else {
@@ -70,69 +62,155 @@ class HuggingFaceService
         }
 
         $response = $this->callModel(
-            $this->models['experience'], // Using same NER model
+            $this->models['experience'],
             $eduText
         );
 
         return $this->processEducationResponse($response);
     }
 
-    /**
-     * Evaluate resume quality
-     */
     public function evaluateQuality(string $text): float
     {
-        $prompt = "Rate the quality of this resume text from 1-10: " . substr($text, 0, 1000);
-        
         $response = $this->callModel(
             $this->models['quality'],
-            $prompt
+            "Rate quality (1-10) of: " . substr($text, 0, 1000)
         );
 
         return $this->processQualityResponse($response);
     }
 
-    /**
-     * Generate recommendations
-     */
     public function generateRecommendations(string $text): array
     {
-        $prompt = "Provide 3 recommendations to improve this resume: " . substr($text, 0, 1000);
-        
         $response = $this->callModel(
             $this->models['quality'],
-            $prompt
+            "Suggest 3 improvements for: " . substr($text, 0, 1000)
         );
 
         return $this->processRecommendationsResponse($response);
     }
 
-    /**
-     * Generic model calling method
-     */
-    protected function callModel(string $model, string $input): array
-    {
-        try {
-            $response = $this->client->post($this->apiUrl . $model, [
-                'headers' => [
-                    'Authorization' => 'Bearer ' . $this->apiToken,
-                    'Content-Type' => 'application/json',
-                ],
-                'json' => ['inputs' => $input],
-                'timeout' => 30
-            ]);
+protected function callModel(string $model, string $input): array
+{
+    try {
+        $response = $this->client->post($this->apiUrl . $model, [
+            'headers' => [
+                'Authorization' => 'Bearer ' . $this->apiToken,
+                'Content-Type' => 'application/json',
+            ],
+            'json' => ['inputs' => $input],
+            'timeout' => 30
+        ]);
 
-            return json_decode($response->getBody()->getContents(), true);
-        } catch (GuzzleException $e) {
-            \Log::error("Hugging Face API call failed: " . $e->getMessage());
-            return ['error' => $e->getMessage()];
+        if ($response->getStatusCode() === 403) {
+            throw new \Exception('Token missing inference permissions. Regenerate token with "Write" access.');
         }
+
+        return json_decode($response->getBody()->getContents(), true) ?? [];
+
+    } catch (\GuzzleHttp\Exception\ClientException $e) {
+        $response = $e->getResponse();
+        $body = $response ? json_decode($response->getBody()->getContents(), true) : [];
+        return ['error' => $body['error'] ?? $e->getMessage()];
+    } catch (\Exception $e) {
+        return ['error' => $e->getMessage()];
+    }
+}
+
+    protected function processSkillsResponse(array $response): array
+    {
+        if (isset($response['error'])) {
+            return ['error' => $response['error']];
+        }
+
+        if (isset($response[0]['sequence'])) {
+            return array_map('trim', explode(',', $response[0]['sequence']));
+        }
+
+        return [];
     }
 
-    // ... (Add the various processResponse methods below)
-    protected function processSkillsResponse(array $response): array { /* ... */ }
-    protected function processExperienceResponse(array $response): array { /* ... */ }
-    protected function processEducationResponse(array $response): array { /* ... */ }
-    protected function processQualityResponse(array $response): float { /* ... */ }
-    protected function processRecommendationsResponse(array $response): array { /* ... */ }
+    public function isModelReady(string $model): bool
+{
+    try {
+        $response = $this->client->get($this->apiUrl . $model, [
+            'headers' => ['Authorization' => 'Bearer ' . $this->apiToken]
+        ]);
+        
+        $data = json_decode($response->getBody()->getContents(), true);
+        return $data['loaded'] ?? false;
+        
+    } catch (\Exception $e) {
+        return false;
+    }
+}
+
+    protected function processExperienceResponse(array $response): array
+    {
+        if (isset($response['error'])) {
+            return ['error' => $response['error']];
+        }
+
+        $experience = [];
+        foreach ($response as $item) {
+            if (isset($item['entity_group']) && in_array($item['entity_group'], ['ORG', 'TITLE'])) {
+                $experience[] = [
+                    'type' => $item['entity_group'],
+                    'value' => $item['word'],
+                    'score' => $item['score'] ?? 0
+                ];
+            }
+        }
+
+        return $experience ?: [];
+    }
+
+    protected function processEducationResponse(array $response): array
+    {
+        if (isset($response['error'])) {
+            return ['error' => $response['error']];
+        }
+
+        $education = [];
+        foreach ($response as $item) {
+            if (isset($item['entity_group']) && $item['entity_group'] === 'EDU') {
+                $education[] = [
+                    'institution' => $item['word'],
+                    'score' => $item['score'] ?? 0
+                ];
+            }
+        }
+
+        return $education ?: [];
+    }
+
+    protected function processQualityResponse(array $response): float
+    {
+        if (isset($response['error'])) {
+            return 0.0;
+        }
+
+        if (isset($response[0]['score'])) {
+            return min(10, max(1, round($response[0]['score'] * 10, 1)));
+        }
+
+        return 5.0;
+    }
+
+    protected function processRecommendationsResponse(array $response): array
+    {
+        if (isset($response['error'])) {
+            return [$response['error']];
+        }
+
+        if (isset($response[0]['generated_text'])) {
+            return array_filter(array_map('trim', 
+                explode("\n", $response[0]['generated_text'])));
+        }
+
+        return [
+            'Add more measurable achievements',
+            'Include relevant technical keywords',
+            'Showcase leadership experiences'
+        ];
+    }
 }

@@ -28,10 +28,21 @@ Route::middleware('auth')->group(function () {
 require __DIR__.'/auth.php';
 
 
-Route::get('/ai-checker', function () {
-    return inertia('NavLinks/AiChecker'); // Renders resources/js/Pages/AiChecker.vue
-})->name('ai-checker');
-
+Route::middleware(['web', 'auth'])->group(function () {
+    
+    // Page Routes
+    Route::get('/ai-checker', fn () => inertia('NavLinks/AiChecker'))
+        ->name('ai-checker');
+    
+    // Data Routes
+    Route::prefix('ajax')->name('ajax.')->group(function () {
+        Route::post('/resume/upload', [ResumeController::class, 'upload'])
+            ->name('resume.upload');
+            
+        Route::get('/resume/{resume}/status', [ResumeController::class, 'checkAnalysisStatus'])
+            ->name('resume.status');
+    });
+});
 
 
 
@@ -46,3 +57,21 @@ Route::get('/ai-analytics', function () {
 
  Route::post('/upload', [ResumeController::class, 'upload'])
         ->name('resume.process');
+
+
+        // routes/web.php (temporary test route)
+Route::get('/verify-hf-token', function() {
+    $client = new \GuzzleHttp\Client();
+    try {
+        $response = $client->post('https://api-inference.huggingface.co/models/bert-base-uncased', [
+            'headers' => [
+                'Authorization' => 'Bearer ' . env('HUGGING_FACE_API_KEY'),
+                'Content-Type' => 'application/json',
+            ],
+            'json' => ['inputs' => 'test']
+        ]);
+        return 'Token works! Status: ' . $response->getStatusCode();
+    } catch (\Exception $e) {
+        return 'Token error: ' . $e->getMessage();
+    }
+});
