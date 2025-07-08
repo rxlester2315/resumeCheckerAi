@@ -25,47 +25,39 @@ class AnalyzeResumeJob implements ShouldQueue
     /**
      * Execute the job.
      */
-   public function handle(HuggingFaceService $huggingFace)
+
+
+    public function handle(HuggingFaceService $huggingFace)
 {
     $this->resume->update([
         'ai_analysis_status' => 'processing',
         'ai_progress' => 10
     ]);
-    
+
     try {
-        // Check if models are ready first
-        foreach (['skills', 'experience', 'education'] as $modelType) {
-            if (!$huggingFace->isModelReady($huggingFace->getModel($modelType))) {
-                throw new \Exception("Model {$modelType} not ready");
-            }
-        }
-        
-        $analysis = $huggingFace->analyzeResumeText($this->resume->extracted_text);
-        
-        if (isset($analysis['error'])) {
-            throw new \Exception($analysis['error']);
-        }
-        
+        $analysis = [
+            'skills' => $huggingFace->extractSkills($this->resume->extracted_text),
+            'experience' => $huggingFace->analyzeExperience($this->resume->extracted_text),
+            'education' => $huggingFace->analyzeEducation($this->resume->extracted_text),
+            'quality_score' => $huggingFace->evaluateQuality($this->resume->extracted_text),
+            'recommendations' => $huggingFace->generateRecommendations($this->resume->extracted_text)
+        ];
+
         $this->resume->update([
             'ai_analysis_status' => 'completed',
             'ai_progress' => 100,
             'ai_results' => $analysis
         ]);
-        
+
     } catch (\Exception $e) {
         $this->resume->update([
-            'ai_analysis_status' => 'failed',
+            'ai_analysis_status' => 'partial',
             'ai_results' => [
                 'error' => $e->getMessage(),
-                'retry_possible' => true,
-                'failed_at' => now()->toDateTimeString()
+                'partial_results' => true
             ]
         ]);
-        
-        // Retry after 5 minutes if it's a temporary error
-        if (str_contains($e->getMessage(), ['timeout', 'loading', 'rate limit'])) {
-            $this->release(300); // 5 minute delay
-        }
     }
 }
+
 }
