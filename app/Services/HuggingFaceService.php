@@ -143,6 +143,7 @@ protected function enhancedLocalSkillsExtraction(string $text): array
         
         return $result;
     }
+    
 
     protected function getWorkExperience(string $text): array
     {
@@ -194,43 +195,10 @@ protected function enhancedLocalSkillsExtraction(string $text): array
         return $result;
     }
 
-    /**
-     * NEW: Extract only formal work experience (excluding internships)
-     */
-    
-
-    /**
-     * NEW: Extract only internship experiences
-     */
-    protected function getInternshipExperience(string $text): array
-    {
-        $internships = [];
-        
-        // First try to find a dedicated internship section
-        $internshipText = $this->extractInternshipSection($text);
-        
-        // If no dedicated section, look for internships in experience section
-        if (empty($internshipText)) {
-            if (preg_match('/EXPERIENCE[:]?(.+?)(?=EDUCATION|SKILLS|PROJECTS|$)/is', $text, $match)) {
-                $experienceText = $match[1];
-                // Extract only lines mentioning internships
-                preg_match_all('/.*intern.*\n?/i', $experienceText, $internshipMatches);
-                $internshipText = implode('\n', $internshipMatches[0] ?? []);
-            }
-        }
-
-        if (!empty($internshipText)) {
-            $this->parseStructuredInternships($internshipText, $internships);
-            $this->parseBulletPointInternships($internshipText, $internships);
-        }
-        
-        return $this->normalizeExperience($this->cleanInternshipList($internships), 'internship');
-    }
-
 
 protected function getProjectExperience(string $text): array
 {
-        $text = preg_replace('/^.*?(?=(EDUCATION|EXPERIENCE|PROJECTS|SKILLS))/i', '', $text);
+    $text = preg_replace('/^.*?(?=(EDUCATION|EXPERIENCE|PROJECTS|SKILLS))/i', '', $text);
 
     // First try to find a dedicated projects section
     $projectsText = $this->extractProjectsSection($text);
@@ -245,17 +213,36 @@ protected function getProjectExperience(string $text): array
 
     // ✅ Initialize projects list
     $projects = [];
+    
+    // 🔧 ADD DEBUGGING: Log what's being parsed
+    error_log("=== PROJECT PARSING DEBUG ===");
+    error_log("Projects text being parsed: " . substr($projectsText, 0, 500));
+    
     $this->parseBulletPointProjects($projectsText, $projects);
+    error_log("After bullet points: " . json_encode($projects));
+    
     $this->parseHeaderBasedProjects($projectsText, $projects);
+    error_log("After header based: " . json_encode($projects));
+    
     $this->parseImplicitProjects($projectsText, $projects);
+    error_log("After implicit: " . json_encode($projects));
 
     // ✅ Clean and separate each project
     $cleanProjects = $this->cleanProjectsList($projects);
+    error_log("After cleaning: " . json_encode($cleanProjects));
 
     // ✅ Final filter to remove GitHub-only or malformed entries
     $filtered = array_values(array_filter($cleanProjects, function ($project) {
         $isGitHubLink = fn($val) => is_string($val) &&
-            preg_match('/^(https?:\/\/)?(www\.)?github\.com\/[a-zA-Z0-9_-]+$/i', trim($val));
+            preg_match('/^(https?:\/\/)?(www\.)?github\.com\/[a-zA-Z0-9_-]+\/?$/i', trim($val));
+
+        // 🔧 ADD DEBUGGING
+        if (isset($project['description']) && $isGitHubLink($project['description'])) {
+            error_log("FILTERING OUT GitHub description: " . $project['description']);
+        }
+        if (isset($project['company']) && $isGitHubLink($project['company'])) {
+            error_log("FILTERING OUT GitHub company: " . $project['company']);
+        }
 
         // Remove if company or description is just a GitHub profile link
         if (
@@ -268,20 +255,25 @@ protected function getProjectExperience(string $text): array
         // Remove if all fields are GitHub links or empty
         $nonEmpty = array_filter($project, fn($v) => !empty(trim((string) $v)));
         if (count($nonEmpty) > 0 && array_reduce($nonEmpty, fn($carry, $val) => $carry && $isGitHubLink($val), true)) {
+            error_log("FILTERING OUT all-GitHub project: " . json_encode($project));
             return false;
         }
 
         return true;
     }));
 
+    error_log("After final filtering: " . json_encode($filtered));
+
     // Normalize and return
-    return $this->normalizeExperience($filtered, 'project');
+    $normalized = $this->normalizeExperience($filtered, 'project');
+    error_log("After normalization: " . json_encode($normalized));
+    error_log("=== END PROJECT PARSING DEBUG ===");
+    
+    return $normalized;
 }
 
 
 
-    
-    
     protected function parseWorkEntries(string $text): array
     {
         $workEntries = [];
@@ -321,9 +313,11 @@ protected function getProjectExperience(string $text): array
         return $workEntries;
     }
 
-    /**
+
+        /**
      * Normalizes experience entries to consistent structure
      */
+
 
 protected function normalizeExperience(array $entries, string $type): array
 {
@@ -331,25 +325,39 @@ protected function normalizeExperience(array $entries, string $type): array
     
     foreach ($entries as $item) {
         // Handle project format
- $name = $item['name'] ?? '';
-    $description = $item['description'] ?? '';
+        $name = $item['name'] ?? '';
+        $description = $item['description'] ?? '';
 
-         // 🚫 Skip if description is a GitHub link or very short
-    if (preg_match('/^https?:\/\/(www\.)?github\.com\/[^\s]*$/i', trim($description))) {
-        continue;
-    }
+        // 🔧 CRITICAL FIX: Check BOTH name and description for GitHub URLs FIRST
+        $isGitHubUrl = function($text) {
+            return preg_match('/^(https?:\/\/)?(www\.)?github\.com\/[a-zA-Z0-9_-]+\/?$/i', trim($text));
+        };
 
-    // 🚫 Skip if name is a URL
-    if (preg_match('/^https?:\/\/(www\.)?github\.com\/[^\s]*$/i', trim($name))) {
-        continue;
-    }
+        // Skip if name is a GitHub URL
+        if ($isGitHubUrl($name)) {
+            continue;
+        }
 
-    // 🚫 Skip if both name and description are very short or contain no words
-    if (strlen(strip_tags($name)) < 5 && strlen(strip_tags($description)) < 10) {
-        continue;
-    }
+        // Skip if description is a GitHub URL
+        if ($isGitHubUrl($description)) {
+            continue;
+        }
 
-    
+        // Skip if name is empty and description is very short or contains only GitHub
+        if (empty(trim($name)) && strlen(trim($description)) < 10) {
+            continue;
+        }
+
+        // Skip if both name and description are very short or contain no meaningful words
+        if (strlen(strip_tags($name)) < 3 && strlen(strip_tags($description)) < 5) {
+            continue;
+        }
+
+        // 🔧 ADDITIONAL CHECK: Skip if description contains only a GitHub URL and nothing else
+        if (preg_match('/^\s*(https?:\/\/)?(www\.)?github\.com\/[a-zA-Z0-9_-]+\/?\s*$/i', $description)) {
+            continue;
+        }
+        
         if (isset($item['name'])) {
             $company = $this->determineProjectCompany($item);
             
@@ -358,6 +366,11 @@ protected function normalizeExperience(array $entries, string $type): array
             
             if (count($projectDescriptions) > 1) {
                 foreach ($projectDescriptions as $desc) {
+                    // 🔧 ADDITIONAL CHECK: Skip individual descriptions that are GitHub URLs
+                    if ($isGitHubUrl($desc)) {
+                        continue;
+                    }
+                    
                     $normalized[] = [
                         'company' => $this->determineProjectCompany(['name' => $item['name'], 'description' => $desc]),
                         'description' => $desc,
@@ -447,6 +460,7 @@ protected function determineProjectCompany(array $project): string
 }
 
 
+
 protected function splitCombinedProjects(string $description): array
 {
     // Just split the description directly
@@ -471,94 +485,8 @@ protected function splitCombinedProjects(string $description): array
         return !empty($technologies) ? implode(', ', $technologies) : 'Various technologies';
     }
 
-    // Keep all existing internship extraction methods
-    protected function extractInternshipSection(string $text): string
-    {
-        $patterns = [
-            '/INTERNSHIPS?:?(.+?)(?=EXPERIENCE|EDUCATION|SKILLS|EMPLOYMENT|PROJECTS|$)/is',
-            '/INTERNSHIP EXPERIENCE:?(.+?)(?=WORK|EDUCATION|EMPLOYMENT|PROJECTS|$)/is'
-        ];
-
-        foreach ($patterns as $pattern) {
-            if (preg_match($pattern, $text, $match)) {
-                return trim($match[1]);
-            }
-        }
-
-        return '';
-    }
-
-    protected function parseStructuredInternships(string $text, array &$internships): void
-    {
-        // Look for structured internship entries
-        if (preg_match_all('/([A-Z][a-z]+ \d{4} - (?:[A-Z][a-z]+ \d{4}|Present))\s*([^\n]+)\s*Intern\s*,\s*([^\n]+)/i', $text, $matches, PREG_SET_ORDER)) {
-            foreach ($matches as $match) {
-                $internships[] = [
-                    'title' => 'Intern',
-                    'company' => trim($match[3]),
-                    'duration' => trim($match[1]),
-                    'description' => trim($match[2]),
-                    'type' => 'internship'
-                ];
-            }
-        }
-    }
-
-    protected function parseBulletPointInternships(string $text, array &$internships): void
-    {
-        // Look for bullet point internship entries
-        if (preg_match_all('/•\s*(.*?Intern.*?)\s*[,-]\s*(.*?)\s*[,-]\s*(.*?)(?=\n•|\n\n|$)/i', $text, $matches, PREG_SET_ORDER)) {
-            foreach ($matches as $match) {
-                $internships[] = [
-                    'title' => trim($match[1]),
-                    'company' => trim($match[2]),
-                    'duration' => trim($match[3]),
-                    'description' => '',
-                    'type' => 'internship'
-                ];
-            }
-        }
-        
-        // Alternative bullet point format
-        if (preg_match_all('/•\s*(.*?)\s*Intern\s*,\s*(.*?)\s*\((.*?)\)/i', $text, $matches, PREG_SET_ORDER)) {
-            foreach ($matches as $match) {
-                $internships[] = [
-                    'title' => trim($match[1]) . ' Intern',
-                    'company' => trim($match[2]),
-                    'duration' => trim($match[3]),
-                    'description' => '',
-                    'type' => 'internship'
-                ];
-            }
-        }
-    }
-
-    protected function cleanInternshipList(array $internships): array
-    {
-        $uniqueInternships = [];
-        $seen = [];
-        
-        foreach ($internships as $internship) {
-            // Basic validation
-            if (empty($internship['company']) || empty($internship['title'])) {
-                continue;
-            }
-            
-            // Normalize for comparison
-            $key = strtolower($internship['company'] . '|' . $internship['title']);
-            
-            // Skip duplicates
-            if (!isset($seen[$key])) {
-                $seen[$key] = true;
-                $uniqueInternships[] = $internship;
-            }
-        }
-        
-        return $uniqueInternships;
-    }
-
-    // Keep all existing project extraction methods
-   protected function extractProjectsSection(string $text): string
+   // Keep all existing project extraction methods
+protected function extractProjectsSection(string $text): string
 {
     // First remove profile/contact section
     $text = preg_replace('/^(.*?)(?=EDUCATION|EXPERIENCE|PROJECTS|SKILLS)/is', '', $text);
@@ -567,7 +495,12 @@ protected function splitCombinedProjects(string $description): array
         '/PROJECTS[:]?(.+?)(?=EXPERIENCE|EDUCATION|SKILLS|EMPLOYMENT|INTERNSHIP|$)/is',
         '/PROJECT EXPERIENCE[:]?(.+?)(?=WORK|EDUCATION|EMPLOYMENT|INTERNSHIP|$)/is',
         '/SELECTED PROJECTS[:]?(.+?)(?=EMPLOYMENT|EDUCATION|INTERNSHIP|$)/is',
-        '/ACADEMIC PROJECTS[:]?(.+?)(?=INTERNSHIP|EDUCATION|$)/is'
+        '/ACADEMIC PROJECTS[:]?(.+?)(?=INTERNSHIP|EDUCATION|$)/is',
+        // Add your new patterns here:
+        '/PERSONAL PROJECTS[:]?(.+?)(?=EXPERIENCE|EDUCATION|SKILLS|EMPLOYMENT|INTERNSHIP|$)/is',
+        '/FREELANCE PROJECTS[:]?(.+?)(?=EXPERIENCE|EDUCATION|SKILLS|EMPLOYMENT|INTERNSHIP|$)/is',
+        '/FREELANCE WORK[:]?(.+?)(?=EXPERIENCE|EDUCATION|SKILLS|EMPLOYMENT|INTERNSHIP|$)/is',
+        '/SIDE PROJECTS[:]?(.+?)(?=EXPERIENCE|EDUCATION|SKILLS|EMPLOYMENT|INTERNSHIP|$)/is'
     ];
 
     foreach ($patterns as $pattern) {
@@ -579,33 +512,46 @@ protected function splitCombinedProjects(string $description): array
         }
     }
 
-    return '';
+    return ''; // Return empty string if no project section found
 }
+
 
 protected function parseBulletPointProjects(string $text, array &$projects): void
 {
     // Split by project indicators
-       $text = preg_replace('/^\s*(name|contact|phone|email|github|portfolio)\s*[:.]?\s*.+$/im', '', $text);
+    $text = preg_replace('/^\s*(name|contact|phone|email|github|portfolio)\s*[:.]?\s*.+$/im', '', $text);
     $projectEntries = preg_split('/(?:^|\n)(?:•|\d+\.|\-)\s*/', $text, -1, PREG_SPLIT_NO_EMPTY);
     
     foreach ($projectEntries as $entry) {
         $entry = trim($entry);
         if (empty($entry)) continue;
         
+        // 🔧 ADD DEBUGGING
+        error_log("Processing bullet entry: " . $entry);
+        
         // Skip if it's just a URL
         if (preg_match('/^https?:\/\/[^\s]+$/i', $entry)) {
+            error_log("Skipping URL-only entry: " . $entry);
+            continue;
+        }
+        
+        // 🔧 ADD CHECK: Skip if it's just a GitHub profile
+        if (preg_match('/^(https?:\/\/)?(www\.)?github\.com\/[a-zA-Z0-9_-]+\/?$/i', $entry)) {
+            error_log("Skipping GitHub profile entry: " . $entry);
             continue;
         }
         
         // Handle entries that might contain GitHub URLs at the end
         if (preg_match('/^(.+?)\s+(https?:\/\/(?:www\.)?github\.com\/\S+)$/i', $entry, $match)) {
-            $projects[] = [
+            $project = [
                 'name' => trim($match[1]),
-                'description' => '', // Or you could parse the description part
-                'github' => trim($match[2]), // Store GitHub URL separately
+                'description' => '', 
+                'github' => trim($match[2]),
                 'type' => 'project',
                 'source' => 'bullet_points'
             ];
+            error_log("Adding project with GitHub: " . json_encode($project));
+            $projects[] = $project;
             continue;
         }
         
@@ -613,30 +559,48 @@ protected function parseBulletPointProjects(string $text, array &$projects): voi
         if (preg_match('/^([^\n:-]+?)\s*[:-]\s*(.+)/s', $entry, $match)) {
             $description = trim($match[2]);
             
+            // 🔧 ADD CHECK: Skip if description is just GitHub profile
+            if (preg_match('/^(https?:\/\/)?(www\.)?github\.com\/[a-zA-Z0-9_-]+\/?$/i', $description)) {
+                error_log("Skipping project with GitHub-only description: " . $description);
+                continue;
+            }
+            
             // Check if description contains a GitHub URL
             if (preg_match('/^(.*?)\s*(https?:\/\/(?:www\.)?github\.com\/\S+)$/i', $description, $descMatch)) {
-                $projects[] = [
+                $project = [
                     'name' => trim($match[1]),
                     'description' => trim($descMatch[1]),
                     'github' => trim($descMatch[2]),
                     'type' => 'project',
                     'source' => 'bullet_points'
                 ];
+                error_log("Adding project with separated GitHub: " . json_encode($project));
+                $projects[] = $project;
             } else {
-                $projects[] = [
+                $project = [
                     'name' => trim($match[1]),
                     'description' => $description,
                     'type' => 'project',
                     'source' => 'bullet_points'
                 ];
+                error_log("Adding standard project: " . json_encode($project));
+                $projects[] = $project;
             }
         } else {
-            $projects[] = [
+            // 🔧 ADD CHECK: Skip if the whole entry is just GitHub
+            if (preg_match('/^(https?:\/\/)?(www\.)?github\.com\/[a-zA-Z0-9_-]+\/?$/i', $entry)) {
+                error_log("Skipping GitHub-only fallback entry: " . $entry);
+                continue;
+            }
+            
+            $project = [
                 'name' => $entry,
                 'description' => '',
                 'type' => 'project',
                 'source' => 'bullet_points'
             ];
+            error_log("Adding fallback project: " . json_encode($project));
+            $projects[] = $project;
         }
     }
 }
@@ -689,6 +653,8 @@ protected function parseBulletPointProjects(string $text, array &$projects): voi
         }
     }
 
+
+
 protected function cleanProjectsList(array $projects): array 
 {
     $uniqueProjects = [];
@@ -698,14 +664,32 @@ protected function cleanProjectsList(array $projects): array
         $name = trim($project['name'] ?? '');
         $description = trim($project['description'] ?? '');
         
-        // Skip if the NAME is just a GitHub profile URL
-        if (preg_match('/^https?:\/\/(www\.)?github\.com\/[a-z0-9_-]+\/?$/i', $name)) {
+        // 🔧 CRITICAL: Check if name OR description is ONLY a GitHub URL
+        $isGitHubOnly = function($text) {
+            return preg_match('/^\s*(https?:\/\/)?(www\.)?github\.com\/[a-zA-Z0-9_-]+\/?\s*$/i', $text);
+        };
+        
+        // Skip if the NAME is just a GitHub URL
+        if ($isGitHubOnly($name)) {
+            continue;
+        }
+        
+        // Skip if the DESCRIPTION is just a GitHub URL
+        if ($isGitHubOnly($description)) {
             continue;
         }
         
         // Clean GitHub profile URLs from DESCRIPTION (keep other URLs)
         $description = preg_replace(
             '/\bhttps?:\/\/(www\.)?github\.com\/[a-z0-9_-]+\/?\b/i', 
+            '', 
+            $description
+        );
+        $description = trim($description);
+        
+        // 🔧 ADDITIONAL: Remove standalone github.com links without protocol
+        $description = preg_replace(
+            '/\bgithub\.com\/[a-z0-9_-]+\/?\b/i', 
             '', 
             $description
         );
@@ -724,6 +708,11 @@ protected function cleanProjectsList(array $projects): array
             continue;
         }
         
+        // 🔧 ADDITIONAL CHECK: Skip if name is just "github" or similar
+        if (preg_match('/^(github|git|repository|repo)$/i', $name)) {
+            continue;
+        }
+        
         // Update the cleaned description
         $project['description'] = $description;
         
@@ -733,14 +722,411 @@ protected function cleanProjectsList(array $projects): array
             $seen[$key] = true;
             $uniqueProjects[] = $project;
         }
-        // After cleaning description...
-if (empty($name) || preg_match('/^https?:\/\/(www\.)?github\.com\/[a-z0-9_-]+\/?$/i', $description)) {
-    continue;
-}
     }
     
     return $uniqueProjects;
 }
+
+
+
+
+
+    /**
+     * NEW: Extract only formal work experience (excluding internships)
+     */
+
+    
+
+    /**
+     * NEW: Extract only internship experiences
+     */
+
+protected function getInternshipExperience(string $text): array
+{
+    $internships = [];
+    
+    // STEP 1: First, let's see if there's ANY mention of "intern" anywhere
+    error_log("=== INTERNSHIP DETECTION START ===");
+    error_log("Full text length: " . strlen($text));
+    
+    if (stripos($text, 'intern') === false) {
+        error_log("NO 'intern' found anywhere in text");
+        return [];
+    }
+    
+    error_log("'intern' found in text, proceeding...");
+    
+    // STEP 2: Try multiple extraction strategies
+    $internships = array_merge($internships, $this->extractFromDedicatedSection($text));
+    $internships = array_merge($internships, $this->extractFromAnywhereInText($text));
+    
+    error_log("Total raw internships found: " . count($internships));
+    
+    if (empty($internships)) {
+        error_log("No internships extracted, returning empty array");
+        return [];
+    }
+    
+    $cleaned = $this->cleanInternshipList($internships);
+    $normalized = $this->normalizeExperience($cleaned, 'internship');
+    
+    error_log("Final internships after cleaning: " . count($normalized));
+    return $normalized;
+}
+
+protected function extractInternshipSection(string $text): string 
+{
+    // Try multiple patterns for internship sections
+    $patterns = [
+        // Standard patterns
+        '/(?:INTERNSHIPS?|INTERNSHIPS? EXPERIENCE)[:]*\s*(.+?)(?=(?:EXPERIENCE|EDUCATION|SKILLS|PROJECTS|WORK|EMPLOYMENT|$|\n\s*\n))/is',
+        // Standalone internship heading
+        '/^\s*INTERNSHIP\s*$(.+?)(?=\n\s*\n)/im',
+        // More flexible patterns
+        '/INTERN[A-Z\s]*[:]*\s*(.+?)(?=\n[A-Z\s]{3,}|$)/is',
+        // Look for any section that might contain internships
+        '/(?:^|\n)\s*([A-Z\s]*INTERN[A-Z\s]*)\s*[:]*\s*(.+?)(?=\n[A-Z\s]{3,}|$)/is'
+    ];
+    
+    foreach ($patterns as $i => $pattern) {
+        if (preg_match($pattern, $text, $match)) {
+            error_log("Internship section found with pattern $i");
+            return trim($match[1] ?? $match[2] ?? '');
+        }
+    }
+    
+    error_log("No internship section found with any pattern");
+    return '';
+}  
+
+
+protected function extractFromDedicatedSection(string $text): array
+{
+    $internships = [];
+    $sectionText = '';
+    
+    // More specific patterns that require "intern" to be a whole word
+    $sectionPatterns = [
+        // Standard section headers (must start with INTERN)
+        '/^(?:INTERNSHIPS?|INTERNSHIPS? EXPERIENCE)\s*:?\s*\n(.+?)(?=(?:\n\s*[A-Z]{3,}\s*:|\n\s*\n|$))/im',
+        // Section with heading and content
+        '/(?:^|\n)\s*(INTERNSHIPS?|INTERNSHIPS? EXPERIENCE)\s*:?\s*\n(.+?)(?=\n\s*(?:[A-Z]{3,}|$))/is',
+        // Any line that starts with "Internship" and has substantial content
+        '/(?:^|\n)(Internship\s+.+?)(?=\n\s*(?:[A-Z]{3,}|\n\s*\n|$))/i',
+        // More strict version of your flexible pattern
+        '/(?:^|\n)\s*([A-Z][A-Z\s]*INTERN[A-Z\s]*)\s*:?\s*\n(.+?)(?=\n\s*[A-Z]{3,}|\n\s*\n|$)/'
+    ];
+    
+    foreach ($sectionPatterns as $i => $pattern) {
+        if (preg_match($pattern, $text, $match)) {
+            $sectionText = trim($match[1] ?? $match[2] ?? '');
+            // Additional validation that we found actual internship content
+            if (preg_match('/\bintern\b.+\b(?:experience|role|position|at|for)\b/i', $sectionText)) {
+                error_log("Valid internship section found with pattern $i: " . substr($sectionText, 0, 100));
+                break;
+            }
+            $sectionText = ''; // Reset if validation fails
+        }
+    }
+    
+    if (!empty($sectionText)) {
+        $internships = array_merge($internships, $this->parseInternshipText($sectionText));
+    }
+    
+    return $internships;
+}
+
+protected function extractFromAnywhereInText(string $text): array
+{
+    $internships = [];
+    
+    // Find all lines that contain "intern" (case insensitive)
+    preg_match_all('/^.*intern.*$/im', $text, $matches);
+    
+    error_log("Found " . count($matches[0]) . " lines containing 'intern'");
+    
+    foreach ($matches[0] as $line) {
+        $line = trim($line);
+        if (strlen($line) < 10) continue; // Skip very short lines
+        
+        // Skip lines that are clearly section headers
+        if (preg_match('/^\s*INTERN/i', $line) && strlen($line) < 30) {
+            error_log("Skipping header line: $line");
+            continue;
+        }
+        
+        error_log("Processing intern line: $line");
+        $parsed = $this->parseInternshipLine($line);
+        if ($parsed) {
+            $internships[] = $parsed;
+        }
+    }
+    
+    return $internships;
+}
+protected function parseInternshipText(string $text): array
+{
+    $internships = [];
+    
+    // Split into individual entries with more precise delimiters
+    $entries = preg_split('/(?:\n\s*\n|\n\s*[•\-*]\s*|\n\s*\d+\.\s*)/', $text);
+    
+    foreach ($entries as $entry) {
+        $entry = trim($entry);
+        
+        // Skip short entries or those without internship context
+        if (strlen($entry) < 20 || !preg_match('/\bintern\b/i', $entry)) {
+            continue;
+        }
+        
+        // Additional validation for actual internship content
+        if (!preg_match('/\b(?:intern|internship)\b.*\b(?:at|for|with|as|role|position)\b/i', $entry)) {
+            continue;
+        }
+        
+        $parsed = $this->parseInternshipLine($entry);
+        if ($parsed) {
+            $internships[] = $parsed;
+        }
+    }
+    
+    return $internships;
+}
+
+protected function parseInternshipLine(string $line): ?array
+{
+    $line = trim($line);
+    error_log("Parsing line: $line");
+    
+    // Initialize with defaults
+    $internship = [
+        'title' => 'Internship',
+        'description' => $line,
+        'company' => 'Not specified',
+        'duration' => 'Not specified',
+        'type' => 'internshipzz'
+    ];
+    
+    // Pattern 1: "Internship Title - Description for/at Company"
+    if (preg_match('/^Internship\s+(.+?)\s*[-–]\s*(.+?)(?:\s+(?:for|at|with)\s+(.+))?$/i', $line, $match)) {
+        $internship['title'] = 'Internship - ' . trim($match[1]);
+        $internship['description'] = trim($match[2]);
+        if (!empty($match[3])) {
+            $internship['company'] = trim($match[3]);
+        }
+        error_log("Matched pattern 1");
+        return $internship;
+    }
+    
+    // Pattern 2: "Title Intern at/for Company"
+    if (preg_match('/^(.+?)\s+Intern\s+(?:at|for|with)\s+(.+)$/i', $line, $match)) {
+        $internship['title'] = trim($match[1]) . ' Intern';
+        $internship['company'] = trim($match[2]);
+        error_log("Matched pattern 2");
+        return $internship;
+    }
+    
+    // Pattern 3: "Company - Intern Title"
+    if (preg_match('/^(.+?)\s*[-–]\s*(.+?)\s*Intern/i', $line, $match)) {
+        $internship['title'] = trim($match[2]) . ' Intern';
+        $internship['company'] = trim($match[1]);
+        error_log("Matched pattern 3");
+        return $internship;
+    }
+    
+    // Pattern 4: Extract company from "for/at/with Company"
+    if (preg_match('/(?:for|at|with)\s+([^,\n]+)/i', $line, $match)) {
+        $internship['company'] = trim($match[1]);
+        error_log("Extracted company: " . $internship['company']);
+    }
+    
+    // Pattern 5: Extract title if line starts with a role
+    if (preg_match('/^([A-Za-z\s]+(?:Intern|Developer|Assistant|Analyst))/i', $line, $match)) {
+        $internship['title'] = trim($match[1]);
+        error_log("Extracted title: " . $internship['title']);
+    }
+    
+    // Pattern 6: Look for dates
+    if (preg_match('/(\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4}|\d{4}\s*[-–]\s*\d{4}|\d{1,2}\/\d{4})/i', $line, $match)) {
+        $internship['duration'] = trim($match[1]);
+        error_log("Extracted duration: " . $internship['duration']);
+    }
+    
+    error_log("Returning internship: " . json_encode($internship));
+    return $internship;
+}
+protected function parseInternships(string $text, array &$internships): void 
+{
+    error_log("=== PARSING INTERNSHIPS ===");
+    error_log("Text to parse: " . $text);
+    
+    $foundAny = false;
+    
+    // Pattern 0: YOUR SPECIFIC FORMAT - "Internship Web Development- Developed Front-end Design for NGA 911/ Imedia / Pinoytown Hall"
+    if (preg_match_all('/Internship\s+(.+?)-\s*(.+?)(?=\n|$)/i', $text, $matches, PREG_SET_ORDER)) {
+        error_log("Pattern 0 (YOUR FORMAT) found " . count($matches) . " matches");
+        foreach ($matches as $match) {
+            // Extract companies from the description (anything after "for")
+            $description = trim($match[2]);
+            $companies = '';
+            if (preg_match('/(?:for|at)\s+(.+)$/i', $description, $companyMatch)) {
+                $companies = trim($companyMatch[1]);
+                $description = trim(preg_replace('/(?:for|at)\s+.+$/i', '', $description));
+            }
+            
+            $internships[] = [
+                'title' => 'Internship - ' . trim($match[1]),
+                'description' => $description,
+                'company' => $companies ?: 'Multiple Companies',
+                'duration' => 'Not specified',
+                'type' => 'internship'
+            ];
+            $foundAny = true;
+        }
+    }
+    
+    // Pattern 1: Structured format (e.g., "June 2023 - Aug 2023 | Software Intern, Google")
+    if (!$foundAny && preg_match_all('/([A-Za-z]+\s+\d{4}\s*-\s*(?:[A-Za-z]+\s+\d{4}|Present|Current))\s*\|\s*(.*?)\s*Intern\s*,\s*(.*?)(?=\n\n|\n•|\n-|$)/i', $text, $matches, PREG_SET_ORDER)) {
+        error_log("Pattern 1 found " . count($matches) . " matches");
+        foreach ($matches as $match) {
+            $internships[] = [
+                'title' => trim($match[2]) . ' Intern',
+                'company' => trim($match[3]),
+                'duration' => trim($match[1]),
+                'description' => '',
+                'type' => 'internship'
+            ];
+            $foundAny = true;
+        }
+    }
+
+    // Pattern 2: Bullet point format
+    if (!$foundAny && preg_match_all('/[•\-*]\s*(.*?)\s*Intern\s*[,-]\s*(.*?)\s*[,-]\s*(.*?)(?=\n[•\-*]|\n\n|$)/i', $text, $matches, PREG_SET_ORDER)) {
+        error_log("Pattern 2 found " . count($matches) . " matches");
+        foreach ($matches as $match) {
+            $internships[] = [
+                'title' => trim($match[1]) . ' Intern',
+                'company' => trim($match[2]),
+                'duration' => trim($match[3]),
+                'description' => '',
+                'type' => 'internship'
+            ];
+            $foundAny = true;
+        }
+    }
+
+    // Pattern 3: Generic "Title - Description" format
+    if (!$foundAny && preg_match_all('/^(.+?)\s*-\s*(.+?)\n\s*(?:for|at)\s*(.+?)(?=\n|$)/im', $text, $matches, PREG_SET_ORDER)) {
+        error_log("Pattern 3 found " . count($matches) . " matches");
+        foreach ($matches as $match) {
+            $internships[] = [
+                'title' => trim($match[1]),
+                'description' => trim($match[2]),
+                'company' => trim($match[3]),
+                'duration' => 'Not specified',
+                'type' => 'internship'
+            ];
+            $foundAny = true;
+        }
+    }
+
+    // Pattern 4: Keyword-based fallback
+    if (!$foundAny && preg_match_all('/Intern(?:ship)?:?\s*(.*?)\s*(?:at|,)\s*(.*?)(?=\n\n|$)/i', $text, $matches, PREG_SET_ORDER)) {
+        error_log("Pattern 4 found " . count($matches) . " matches");
+        foreach ($matches as $match) {
+            $internships[] = [
+                'title' => trim($match[1]),
+                'company' => trim($match[2]),
+                'duration' => '',
+                'description' => '',
+                'type' => 'internship'
+            ];
+            $foundAny = true;
+        }
+    }
+    
+    // Pattern 5: Very flexible - any line containing "intern" (last resort)
+    if (!$foundAny) {
+        error_log("No structured patterns found, trying flexible pattern");
+        if (preg_match_all('/^.*intern.*$/im', $text, $matches)) {
+            error_log("Flexible pattern found " . count($matches[0]) . " lines");
+            foreach ($matches[0] as $line) {
+                if (strlen(trim($line)) > 10) { // Skip very short lines
+                    // Try to extract some meaningful info from the line
+                    $cleanLine = trim($line);
+                    $title = 'Internship';
+                    $description = $cleanLine;
+                    $company = 'Not specified';
+                    
+                    // Try to extract company info
+                    if (preg_match('/(?:for|at|with)\s+(.+?)(?:\s|$|\/)/i', $cleanLine, $compMatch)) {
+                        $company = trim($compMatch[1]);
+                    }
+                    
+                    $internships[] = [
+                        'title' => $title,
+                        'description' => $description,
+                        'company' => $company,
+                        'duration' => 'Not specified',
+                        'type' => 'internship'
+                    ];
+                    $foundAny = true;
+                }
+            }
+        }
+    }
+    
+    error_log("Total internships found: " . count($internships));
+}
+
+
+
+
+protected function cleanInternshipList(array $internships): array
+{
+    $uniqueInternships = [];
+    $seen = [];
+    
+    foreach ($internships as $internship) {
+        // Only require EITHER company OR title OR description
+        $hasContent = !empty($internship['company']) 
+                    || !empty($internship['title'])
+                    || !empty($internship['description']);
+        
+        if (!$hasContent) {
+            error_log('Dropping empty internship: ' . print_r($internship, true));
+            continue;
+        }
+        
+        // Fallback: Use description as title if needed
+        if (empty($internship['title']) && !empty($internship['description'])) {
+            $internship['title'] = substr($internship['description'], 0, 50) . '...';
+        }
+        
+        // Fallback: Set default company if missing
+        if (empty($internship['company'])) {
+            $internship['company'] = 'Unknown Company';
+        }
+        
+        $key = strtolower(($internship['company'] ?? '') . '|' . ($internship['title'] ?? ''));
+        
+        if (!isset($seen[$key])) {
+            $seen[$key] = true;
+            $uniqueInternships[] = $internship;
+        }
+    }
+    
+    return $uniqueInternships;
+}
+
+
+
+
+
+
+
+
+
 
 
 
@@ -803,6 +1189,9 @@ public function analyzeEducation(string $text): array
 
     return $result;
 }
+
+
+
 
 
 
